@@ -1,7 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import axios from 'axios';
 import { Request, Response } from 'express';
-import stringSimilarity from 'string-similarity';
 
 
 import OpenAI from "openai";
