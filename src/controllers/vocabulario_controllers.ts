@@ -212,7 +212,7 @@ const checkAndAssociateSynonyms = async (newWord:any, prisma: PrismaClient) => {
             existingWord.definition.toLowerCase()
         );
 
-        if (similarity > 0.8) {
+        if (similarity > 0.5) {
             // Asociar si no existe ya la relación
             const existingRelation = await prisma.synonym.findFirst({
                 where: {
