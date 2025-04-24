@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import axios from 'axios';
 import { Request, Response } from 'express';
+import stringSimilarity from 'string-similarity';
 
 
 const prisma = new PrismaClient();
@@ -110,11 +111,7 @@ const fetchFromDictionaryAPI = async (word:String) => {
         res.status(500).json({ valid: false, message: (error as Error).message || "Error fetching word" });
     }
 };
-
-/**
- * Crea una palabra a partir del body, usando la API externa si es necesario.
- */
- const createWord = async (req:Request, res:Response, prisma:PrismaClient) => {
+const createWord = async (req: Request, res: Response, prisma: PrismaClient) => {
     const { word } = req.body;
 
     if (!word) return res.status(400).json({ valid: false, message: "Word is required" });
@@ -122,8 +119,9 @@ const fetchFromDictionaryAPI = async (word:String) => {
     try {
         const lowerWord = word.toLowerCase();
 
-        let existingWord = await prisma.word.findUnique({
-            where: { word: lowerWord }
+        const existingWord = await prisma.word.findUnique({
+            where: { word: lowerWord },
+            include: { synonyms: true }
         });
 
         if (existingWord) {
@@ -140,11 +138,8 @@ const fetchFromDictionaryAPI = async (word:String) => {
             }
         });
 
+        // Guardar sinónimos de la API externa
         for (const syn of synonyms) {
-            const existingSynWord = await prisma.word.findUnique({
-                where: { word: syn.toLowerCase() }
-            });
-
             await prisma.synonym.create({
                 data: {
                     word: syn.toLowerCase(),
@@ -152,6 +147,9 @@ const fetchFromDictionaryAPI = async (word:String) => {
                 }
             });
         }
+
+        // Asociar sinónimos automáticos por definición similar
+        await checkAndAssociateSynonyms(newWord, prisma);
 
         const wordWithSynonyms = await prisma.word.findUnique({
             where: { id: newWord.id },
@@ -203,6 +201,53 @@ const fetchFromDictionaryAPI = async (word:String) => {
 
 
 
+const checkAndAssociateSynonyms = async (newWord:any, prisma: PrismaClient) => {
+    const allWords = await prisma.word.findMany();
+
+    for (const existingWord of allWords) {
+        if (existingWord.id === newWord.id) continue;  // Evitar comparar consigo misma
+
+        const similarity = stringSimilarity.compareTwoStrings(
+            newWord.definition.toLowerCase(),
+            existingWord.definition.toLowerCase()
+        );
+
+        if (similarity > 0.8) {
+            // Asociar si no existe ya la relación
+            const existingRelation = await prisma.synonym.findFirst({
+                where: {
+                    word: existingWord.word,
+                    wordRefId: newWord.id
+                }
+            });
+
+            if (!existingRelation) {
+                await prisma.synonym.create({
+                    data: {
+                        word: existingWord.word,
+                        wordRefId: newWord.id
+                    }
+                });
+            }
+
+            const reverseRelation = await prisma.synonym.findFirst({
+                where: {
+                    word: newWord.word,
+                    wordRefId: existingWord.id
+                }
+            });
+
+            if (!reverseRelation) {
+                await prisma.synonym.create({
+                    data: {
+                        word: newWord.word,
+                        wordRefId: existingWord.id
+                    }
+                });
+            }
+        }
+    }
+};
 
 
 
