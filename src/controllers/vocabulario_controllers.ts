@@ -204,9 +204,11 @@ const checkAndAssociateSynonymsAI = async (newWord:any, prisma: PrismaClient) =>
     for (const existingWord of allWords) {
         if (existingWord.id === newWord.id) continue;
 
-        const areSynonyms = await compareWithHuggingFace(
+        const areSynonyms = await compareWithDeepSeek(
+            newWord.word,
             newWord.definition,
-            existingWord.definition,
+            existingWord.word,
+            existingWord.definition
         );
 
         if (areSynonyms) {
@@ -245,29 +247,35 @@ const checkAndAssociateSynonymsAI = async (newWord:any, prisma: PrismaClient) =>
  * Compara dos definiciones usando GPT y determina si las palabras son sinónimos.
  */
 
-const compareWithHuggingFace = async (defA: string, defB: string) => {
-    const API_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2";
 
-    const payload = {
-        inputs: {
-            source_sentence: defA,
-            sentences: [defB]
+const compareWithDeepSeek = async (wordA: string, defA: string, wordB: string, defB: string) => {
+    const prompt = `
+You are a language expert AI.
+
+Compare the following two words based on their definitions and tell me if they are synonyms.
+
+Word 1: "${wordA}"
+Definition 1: "${defA}"
+
+Word 2: "${wordB}"
+Definition 2: "${defB}"
+
+Respond ONLY with "YES" if they are synonyms or "NO" if they are not.
+`;
+
+    const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+        model: "deepseek-chat",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 3
+    }, {
+        headers: {
+            'Authorization': `sk-2523eb09e81b4329bd43d71e058e8526`,
+            'Content-Type': 'application/json'
         }
-    };
+    });
 
-    try {
-        const response = await axios.post(API_URL, payload, {
-            headers: { "Authorization": `Bearer YOUR_FREE_HUGGINGFACE_TOKEN` }
-        });
-
-        const score = response.data[0];  // Devuelve un array con el score
-        console.log("Similarity Score:", score);
-
-        return score > 0.8;  // Si es mayor a 0.8, consideramos sinónimos
-    } catch (err) {
-        console.error("Error in HuggingFace API:", (err as Error).message);
-        return false;
-    }
+    const reply = response.data.choices[0].message.content.trim().toUpperCase();
+    return reply === "YES";
 };
 
 
