@@ -1,6 +1,6 @@
 import { getMockReq, getMockRes } from '@jest-mock/express';
 import { prismaMock } from '../../singelton';
-import { userControllers } from '../user_controllers';
+import { userControllers } from '../vocabulario_controllers';
 import { sendVerificationEmail } from '../../utilities/emailVerification';
 
 jest.fn(sendVerificationEmail);
