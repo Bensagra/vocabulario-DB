@@ -261,7 +261,7 @@ Respond ONLY with "YES" or "NO".
 `;
 
     const response = await client.chat.completions.create({
-        model: "gpt-4",
+        model: "gpt-4.1",
         messages: [{ role: "user", content: prompt }],
         max_tokens: 3
     });
