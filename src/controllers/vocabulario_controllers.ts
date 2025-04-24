@@ -4,6 +4,8 @@ import { Request, Response } from 'express';
 import stringSimilarity from 'string-similarity';
 
 
+import OpenAI from "openai";
+const client = new OpenAI();
 const prisma = new PrismaClient();
 
 /**
@@ -149,7 +151,7 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
         }
 
         // Asociar sinónimos automáticos por definición similar
-        await checkAndAssociateSynonyms(newWord, prisma);
+        await checkAndAssociateSynonymsAI(newWord, prisma);
 
         const wordWithSynonyms = await prisma.word.findUnique({
             where: { id: newWord.id },
@@ -197,39 +199,20 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
         res.status(404).json({ valid: false, message: "Word not found" });
     }
 };
-
-
-
-
-const stopWords = ['the', 'to', 'of', 'and', 'a', 'in', 'on', 'for', 'with', 'by', 'at', 'an', 'is', 'are', 'not', 'be', 'that', 'this', 'as', 'it', 'from', 'or', 'but', 'so', 'if', 'into'];
-
-/**
- * Extrae palabras clave de una definición.
- */
-const extractKeywords = (definition: string) => {
-    return definition
-        .toLowerCase()
-        .replace(/[.,;:()]/g, '')   // Quitar puntuación
-        .split(' ')
-        .filter(word => word && !stopWords.includes(word));
-};
-
-/**
- * Asocia sinónimos si hay concordancia de palabras clave en definiciones.
- */
-const checkAndAssociateSynonyms = async (newWord:any, prisma: PrismaClient) => {
-    const newKeywords = extractKeywords(newWord.definition);
-
+const checkAndAssociateSynonymsAI = async (newWord:any, prisma: PrismaClient) => {
     const allWords = await prisma.word.findMany();
 
     for (const existingWord of allWords) {
         if (existingWord.id === newWord.id) continue;
 
-        const existingKeywords = extractKeywords(existingWord.definition);
+        const areSynonyms = await compareDefinitionsWithAI(
+            newWord.word,
+            newWord.definition,
+            existingWord.word,
+            existingWord.definition
+        );
 
-        const commonWords = newKeywords.filter(word => existingKeywords.includes(word));
-
-        if (commonWords.length >= 2) {   // Si hay al menos 2 palabras en común
+        if (areSynonyms) {
             const existingRelation = await prisma.synonym.findFirst({
                 where: { word: existingWord.word, wordRefId: newWord.id }
             });
@@ -259,6 +242,35 @@ const checkAndAssociateSynonyms = async (newWord:any, prisma: PrismaClient) => {
     }
 };
 
+
+
+/**
+ * Compara dos definiciones usando GPT y determina si las palabras son sinónimos.
+ */
+const compareDefinitionsWithAI = async (wordA: string, defA: string, wordB: string, defB: string) => {
+    const prompt = `
+You are a language expert. Compare the meanings of the following two words based on their definitions.
+
+Word 1: "${wordA}"
+Definition 1: "${defA}"
+
+Word 2: "${wordB}"
+Definition 2: "${defB}"
+
+Are these words synonyms? 
+Respond ONLY with "YES" or "NO".
+`;
+
+    const response = await client.chat.completions.create({
+        model: "gpt-4",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 3
+    });
+
+    const content = response.choices[0]?.message?.content;
+    const reply = content ? content.trim().toUpperCase() : "";
+    return reply === "YES";
+};
 
 
 
