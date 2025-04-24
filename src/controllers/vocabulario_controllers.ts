@@ -204,11 +204,9 @@ const checkAndAssociateSynonymsAI = async (newWord:any, prisma: PrismaClient) =>
     for (const existingWord of allWords) {
         if (existingWord.id === newWord.id) continue;
 
-        const areSynonyms = await compareDefinitionsWithAI(
-            newWord.word,
+        const areSynonyms = await compareWithHuggingFace(
             newWord.definition,
             existingWord.word,
-            existingWord.definition
         );
 
         if (areSynonyms) {
@@ -246,29 +244,30 @@ const checkAndAssociateSynonymsAI = async (newWord:any, prisma: PrismaClient) =>
 /**
  * Compara dos definiciones usando GPT y determina si las palabras son sinónimos.
  */
-const compareDefinitionsWithAI = async (wordA: string, defA: string, wordB: string, defB: string) => {
-    const prompt = `
-You are a language expert. Compare the meanings of the following two words based on their definitions.
 
-Word 1: "${wordA}"
-Definition 1: "${defA}"
+const compareWithHuggingFace = async (defA: string, defB: string) => {
+    const API_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2";
 
-Word 2: "${wordB}"
-Definition 2: "${defB}"
+    const payload = {
+        inputs: {
+            source_sentence: defA,
+            sentences: [defB]
+        }
+    };
 
-Are these words synonyms? 
-Respond ONLY with "YES" or "NO".
-`;
+    try {
+        const response = await axios.post(API_URL, payload, {
+            headers: { "Authorization": `Bearer YOUR_FREE_HUGGINGFACE_TOKEN` }
+        });
 
-    const response = await client.chat.completions.create({
-        model: "gpt-4.1",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 3
-    });
+        const score = response.data[0];  // Devuelve un array con el score
+        console.log("Similarity Score:", score);
 
-    const content = response.choices[0]?.message?.content;
-    const reply = content ? content.trim().toUpperCase() : "";
-    return reply === "YES";
+        return score > 0.8;  // Si es mayor a 0.8, consideramos sinónimos
+    } catch (err) {
+        console.error("Error in HuggingFace API:", (err as Error).message);
+        return false;
+    }
 };
 
 
