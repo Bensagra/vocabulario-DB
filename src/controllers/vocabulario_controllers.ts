@@ -201,24 +201,37 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
 
 
 
+const stopWords = ['the', 'to', 'of', 'and', 'a', 'in', 'on', 'for', 'with', 'by', 'at', 'an', 'is', 'are', 'not', 'be', 'that', 'this', 'as', 'it', 'from', 'or', 'but', 'so', 'if', 'into'];
+
+/**
+ * Extrae palabras clave de una definición.
+ */
+const extractKeywords = (definition: string) => {
+    return definition
+        .toLowerCase()
+        .replace(/[.,;:()]/g, '')   // Quitar puntuación
+        .split(' ')
+        .filter(word => word && !stopWords.includes(word));
+};
+
+/**
+ * Asocia sinónimos si hay concordancia de palabras clave en definiciones.
+ */
 const checkAndAssociateSynonyms = async (newWord:any, prisma: PrismaClient) => {
+    const newKeywords = extractKeywords(newWord.definition);
+
     const allWords = await prisma.word.findMany();
 
     for (const existingWord of allWords) {
-        if (existingWord.id === newWord.id) continue;  // Evitar comparar consigo misma
+        if (existingWord.id === newWord.id) continue;
 
-        const similarity = stringSimilarity.compareTwoStrings(
-            newWord.definition.toLowerCase(),
-            existingWord.definition.toLowerCase()
-        );
+        const existingKeywords = extractKeywords(existingWord.definition);
 
-        if (similarity > 0.5) {
-            // Asociar si no existe ya la relación
+        const commonWords = newKeywords.filter(word => existingKeywords.includes(word));
+
+        if (commonWords.length >= 2) {   // Si hay al menos 2 palabras en común
             const existingRelation = await prisma.synonym.findFirst({
-                where: {
-                    word: existingWord.word,
-                    wordRefId: newWord.id
-                }
+                where: { word: existingWord.word, wordRefId: newWord.id }
             });
 
             if (!existingRelation) {
@@ -231,10 +244,7 @@ const checkAndAssociateSynonyms = async (newWord:any, prisma: PrismaClient) => {
             }
 
             const reverseRelation = await prisma.synonym.findFirst({
-                where: {
-                    word: newWord.word,
-                    wordRefId: existingWord.id
-                }
+                where: { word: newWord.word, wordRefId: existingWord.id }
             });
 
             if (!reverseRelation) {
