@@ -1,20 +1,13 @@
 import { PrismaClient } from '@prisma/client';
 import axios from 'axios';
 import { Request, Response } from 'express';
-import ModelClient, { isUnexpected } from "@azure-rest/ai-inference";
-import { AzureKeyCredential } from "@azure/core-auth";
 
-const token = process.env["GITHUB_TOKEN"];
-const endpoint = "https://models.github.ai/inference";
-const model = "openai/gpt-4.1";
-import OpenAI from "openai";
-const client = new OpenAI();
 const prisma = new PrismaClient();
-const HF_TOKEN = process.env.HUGGINGFACE_API_KEY || "";
+
 /**
  * Consulta la API externa y devuelve definición, tipo y sinónimos.
  */
-const fetchFromDictionaryAPI = async (word:String) => {
+const fetchFromDictionaryAPI = async (word: string) => {
     const response = await axios.get(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`);
     const data = response.data[0];
     return {
@@ -27,8 +20,8 @@ const fetchFromDictionaryAPI = async (word:String) => {
 /**
  * Lista todas las palabras con opciones de orden y filtro.
  */
- const listWords = async (req:Request, res:Response, prisma:PrismaClient) => {
-    const { sort, filter } = req.query;
+const listWords = async (req: Request, res: Response) => {
+    const { sort } = req.query;
 
     try {
         let orderBy = {};
@@ -36,18 +29,10 @@ const fetchFromDictionaryAPI = async (word:String) => {
         if (sort === 'type') orderBy = { type: 'asc' };
         if (sort === 'date') orderBy = { createdAt: 'desc' };
 
-        let words;
-        if (typeof filter === 'string' && filter.startsWith('sinonym:')) {
-            const synonymSearch = filter.split(':')[1];
-            words = await prisma.word.findMany({
-                where: {
-                    synonyms: { some: { word: synonymSearch } }
-                },
-                orderBy
-            });
-        } else {
-            words = await prisma.word.findMany({ orderBy, include: { synonyms: true } });
-        }
+        const words = await prisma.word.findMany({
+            orderBy,
+            include: { apiSynonyms: true, assocSynonyms: true }
+        });
 
         res.status(200).json({ valid: true, words });
     } catch (error) {
@@ -58,7 +43,7 @@ const fetchFromDictionaryAPI = async (word:String) => {
 /**
  * Obtiene o crea una palabra, asociando sinónimos automáticamente.
  */
- const getOrCreateWord = async (req:Request, res:Response, prisma:PrismaClient) => {
+const getOrCreateWord = async (req: Request, res: Response) => {
     const { word } = req.params;
 
     try {
@@ -66,67 +51,39 @@ const fetchFromDictionaryAPI = async (word:String) => {
 
         let existingWord = await prisma.word.findUnique({
             where: { word: lowerWord },
-            include: { synonyms: true }
+            include: { apiSynonyms: true, assocSynonyms: true }
         });
 
         if (existingWord) {
             return res.status(200).json({ valid: true, word: existingWord });
         }
 
-        const { definition, type, synonyms } = await fetchFromDictionaryAPI(lowerWord);
-
-        const newWord = await prisma.word.create({
-            data: {
-                word: lowerWord,
-                type,
-                definition
-            }
-        });
-
-        // Asociar sinónimos automáticamente
-        for (const syn of synonyms) {
-            const existingSynWord = await prisma.word.findUnique({
-                where: { word: syn.toLowerCase() }
-            });
-
-            if (existingSynWord) {
-                await prisma.synonym.create({
-                    data: {
-                        word: syn.toLowerCase(),
-                        wordRefId: newWord.id
-                    }
-                });
-            } else {
-                await prisma.synonym.create({
-                    data: {
-                        word: syn.toLowerCase(),
-                        wordRefId: newWord.id
-                    }
-                });
-            }
-        }
-
-        const wordWithSynonyms = await prisma.word.findUnique({
-            where: { id: newWord.id },
-            include: { synonyms: true }
-        });
-
-        res.status(201).json({ valid: true, word: wordWithSynonyms, message: "Word fetched and saved" });
+        return await createWordInternal(lowerWord, res);
     } catch (error) {
         res.status(500).json({ valid: false, message: (error as Error).message || "Error fetching word" });
     }
 };
-const createWord = async (req: Request, res: Response, prisma: PrismaClient) => {
+
+/**
+ * Crea una palabra, guarda sinónimos de la API y asocia sinónimos automáticamente.
+ */
+const createWord = async (req: Request, res: Response) => {
     const { word } = req.body;
 
     if (!word) return res.status(400).json({ valid: false, message: "Word is required" });
 
-    try {
-        const lowerWord = word.toLowerCase();
+    const lowerWord = word.toLowerCase();
+    return await createWordInternal(lowerWord, res);
+};
 
+/**
+ * Lógica interna de creación de palabra.
+ */
+const createWordInternal = async (lowerWord: string, res: Response) => {
+    try {
         const existingWord = await prisma.word.findUnique({
             where: { word: lowerWord },
-            include: { synonyms: true }
+            include: { apiSynonyms: true, assocSynonyms: true }
         });
 
         if (existingWord) {
@@ -134,6 +91,7 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
         }
 
         const { definition, type, synonyms } = await fetchFromDictionaryAPI(lowerWord);
+        const apiSynonyms = synonyms.map((s: string) => s.toLowerCase());
 
         const newWord = await prisma.word.create({
             data: {
@@ -143,22 +101,20 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
             }
         });
 
-        // Guardar sinónimos de la API externa
-        for (const syn of synonyms) {
-            await prisma.synonym.create({
+        for (const syn of apiSynonyms) {
+            await prisma.apiSynonym.create({
                 data: {
-                    word: syn.toLowerCase(),
+                    word: syn,
                     wordRefId: newWord.id
                 }
             });
         }
 
-        // Asociar sinónimos automáticos por definición similar
-        await checkAndAssociateSynonymsSimple(newWord, prisma);
+        await checkAndAssociateSynonymsFromAPI(newWord, prisma);
 
         const wordWithSynonyms = await prisma.word.findUnique({
             where: { id: newWord.id },
-            include: { synonyms: true }
+            include: { apiSynonyms: true, assocSynonyms: true }
         });
 
         res.status(201).json({ valid: true, word: wordWithSynonyms, message: "Word created successfully" });
@@ -168,9 +124,57 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
 };
 
 /**
+ * Asociar sinónimos automáticos en base a sinónimos traídos por la API.
+ */
+const checkAndAssociateSynonymsFromAPI = async (newWord: any, prisma: PrismaClient) => {
+    const apiSynonymsNew = await prisma.apiSynonym.findMany({
+        where: { wordRefId: newWord.id }
+    });
+    const apiSynonymsNewList = apiSynonymsNew.map(s => s.word.toLowerCase());
+
+    const allWords = await prisma.word.findMany();
+
+    for (const existingWord of allWords) {
+        if (existingWord.id === newWord.id) continue;
+
+        const existingApiSynonyms = await prisma.apiSynonym.findMany({
+            where: { wordRefId: existingWord.id }
+        });
+        const existingApiSynonymsList = existingApiSynonyms.map(s => s.word.toLowerCase());
+
+        const hasMatch = 
+            apiSynonymsNewList.includes(existingWord.word.toLowerCase()) ||
+            existingApiSynonymsList.includes(newWord.word.toLowerCase()) ||
+            apiSynonymsNewList.some(syn => existingApiSynonymsList.includes(syn));
+
+        if (hasMatch) {
+            const existingRelation = await prisma.associatedSynonym.findFirst({
+                where: { word: existingWord.word, wordRefId: newWord.id }
+            });
+
+            if (!existingRelation) {
+                await prisma.associatedSynonym.create({
+                    data: { word: existingWord.word, wordRefId: newWord.id }
+                });
+            }
+
+            const reverseRelation = await prisma.associatedSynonym.findFirst({
+                where: { word: newWord.word, wordRefId: existingWord.id }
+            });
+
+            if (!reverseRelation) {
+                await prisma.associatedSynonym.create({
+                    data: { word: newWord.word, wordRefId: existingWord.id }
+                });
+            }
+        }
+    }
+};
+
+/**
  * Actualiza una palabra existente.
  */
- const updateWord = async (req:Request, res:Response, prisma:PrismaClient) => {
+const updateWord = async (req: Request, res: Response) => {
     const { id } = req.params;
     const { definition, type } = req.body;
 
@@ -178,7 +182,7 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
         const updatedWord = await prisma.word.update({
             where: { id: parseInt(id) },
             data: { definition, type },
-            include: { synonyms: true }
+            include: { apiSynonyms: true, assocSynonyms: true }
         });
 
         res.status(200).json({ valid: true, word: updatedWord, message: "Word updated successfully" });
@@ -190,11 +194,12 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
 /**
  * Elimina una palabra junto con sus sinónimos.
  */
- const deleteWord = async (req:Request, res:Response, prisma:PrismaClient) => {
+const deleteWord = async (req: Request, res: Response) => {
     const { id } = req.params;
 
     try {
-        await prisma.synonym.deleteMany({ where: { wordRefId: parseInt(id) } });
+        await prisma.apiSynonym.deleteMany({ where: { wordRefId: parseInt(id) } });
+        await prisma.associatedSynonym.deleteMany({ where: { wordRefId: parseInt(id) } });
         await prisma.word.delete({ where: { id: parseInt(id) } });
 
         res.status(200).json({ valid: true, message: "Word deleted successfully" });
@@ -202,73 +207,6 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
         res.status(404).json({ valid: false, message: "Word not found" });
     }
 };
-const checkAndAssociateSynonymsSimple = async (newWord: any, prisma: PrismaClient) => {
-    const allWords = await prisma.word.findMany({ include: { synonyms: true } });
-
-    // Obtener sinónimos de la nueva palabra desde la DB
-    const newSynonymsDB = await prisma.synonym.findMany({
-        where: { wordRefId: newWord.id }
-    });
-    const newSynonyms = newSynonymsDB.map(s => s.word.toLowerCase());
-
-    for (const existingWord of allWords) {
-        if (existingWord.id === newWord.id) continue;
-
-        const existingSynonyms = existingWord.synonyms.map(s => s.word.toLowerCase());
-
-        // Comparación cruzada
-        const hasMatch = 
-            // Nueva palabra vs palabra existente
-            newWord.word.toLowerCase() === existingWord.word.toLowerCase() ||
-
-            // Nueva palabra vs sinónimos existentes
-            existingSynonyms.includes(newWord.word.toLowerCase()) ||
-
-            // Sinónimos nuevos vs palabra existente
-            newSynonyms.includes(existingWord.word.toLowerCase()) ||
-
-            // Sinónimos nuevos vs sinónimos existentes
-            newSynonyms.some(syn => existingSynonyms.includes(syn));
-
-        if (hasMatch) {
-            const existingRelation = await prisma.synonym.findFirst({
-                where: { word: existingWord.word, wordRefId: newWord.id }
-            });
-
-            if (!existingRelation) {
-                await prisma.synonym.create({
-                    data: { word: existingWord.word, wordRefId: newWord.id }
-                });
-            }
-
-            const reverseRelation = await prisma.synonym.findFirst({
-                where: { word: newWord.word, wordRefId: existingWord.id }
-            });
-
-            if (!reverseRelation) {
-                await prisma.synonym.create({
-                    data: { word: newWord.word, wordRefId: existingWord.id }
-                });
-            }
-        }
-    }
-};
-
-
-/**
- * Compara dos definiciones usando GPT y determina si las palabras son sinónimos.
- */
-
-
-
-
-
-/**
- * Compara dos definiciones usando Azure AI Inference (GitHub Models).
- * Devuelve true si las palabras son sinónimos.
- */
-
-
 
 export const vocabularioControllers = {
     listWords,
@@ -276,4 +214,4 @@ export const vocabularioControllers = {
     createWord,
     updateWord,
     deleteWord
-}
+};
