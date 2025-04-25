@@ -1,12 +1,13 @@
 import { PrismaClient } from '@prisma/client';
 import axios from 'axios';
 import { Request, Response } from 'express';
-
+import ModelClient, { isUnexpected } from "@azure-rest/ai-inference";
+import { AzureKeyCredential } from "@azure/core-auth";
 
 import OpenAI from "openai";
 const client = new OpenAI();
 const prisma = new PrismaClient();
-
+const HF_TOKEN = process.env.HUGGINGFACE_API_KEY || "";
 /**
  * Consulta la API externa y devuelve definición, tipo y sinónimos.
  */
@@ -204,7 +205,7 @@ const checkAndAssociateSynonymsAI = async (newWord:any, prisma: PrismaClient) =>
     for (const existingWord of allWords) {
         if (existingWord.id === newWord.id) continue;
 
-        const areSynonyms = await compareWithDeepSeek(
+        const areSynonyms = await compareDefinitionsWithAI(
             newWord.word,
             newWord.definition,
             existingWord.word,
@@ -248,11 +249,23 @@ const checkAndAssociateSynonymsAI = async (newWord:any, prisma: PrismaClient) =>
  */
 
 
-const compareWithDeepSeek = async (wordA: string, defA: string, wordB: string, defB: string) => {
-    const prompt = `
-You are a language expert AI.
 
-Compare the following two words based on their definitions and tell me if they are synonyms.
+
+const token = process.env["GITHUB_TOKEN"];
+const endpoint = "https://models.github.ai/inference";
+const model = "openai/gpt-4.1";
+
+/**
+ * Compara dos definiciones usando Azure AI Inference (GitHub Models).
+ * Devuelve true si las palabras son sinónimos.
+ */
+export const compareDefinitionsWithAI = async (wordA: string, defA: string, wordB: string, defB: string): Promise<boolean> => {
+    const client = ModelClient(endpoint, new AzureKeyCredential(token as string));
+
+    const prompt = `
+You are a language expert.
+
+Compare the following two words based on their definitions.
 
 Word 1: "${wordA}"
 Definition 1: "${defA}"
@@ -260,21 +273,33 @@ Definition 1: "${defA}"
 Word 2: "${wordB}"
 Definition 2: "${defB}"
 
-Respond ONLY with "YES" if they are synonyms or "NO" if they are not.
+Are these two words synonyms?
+
+Respond ONLY with "YES" if they are synonyms, or "NO" if they are not.
 `;
 
-    const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-        model: "deepseek-chat",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 3
-    }, {
-        headers: {
-            'Authorization': `sk-2523eb09e81b4329bd43d71e058e8526`,
-            'Content-Type': 'application/json'
+    const response = await client.path("/chat/completions").post({
+        body: {
+            messages: [
+                { role: "system", content: "You are a helpful assistant." },
+                { role: "user", content: prompt }
+            ],
+            temperature: 0,    // Temperatura baja para respuestas más determinísticas
+            top_p: 1.0,
+            model: model
         }
     });
 
-    const reply = response.data.choices[0].message.content.trim().toUpperCase();
+    if (isUnexpected(response)) {
+        console.error("AI Error:", response.body.error);
+        throw response.body.error;
+    }
+
+    const content = response.body.choices[0]?.message?.content;
+    if (!content) {
+        throw new Error("Response content is null or undefined");
+    }
+    const reply = content.trim().toUpperCase();
     return reply === "YES";
 };
 
