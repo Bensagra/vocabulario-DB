@@ -273,7 +273,7 @@ Definition 1: "${defA}"
 Word 2: "${wordB}"
 Definition 2: "${defB}"
 
-Are these two words synonyms?
+Are these two words synonyms or words with similar meanings?
 
 Respond ONLY with "YES" if they are synonyms, or "NO" if they are not.
 `;
