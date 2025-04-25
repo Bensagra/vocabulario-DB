@@ -218,10 +218,43 @@ const deleteWord = async (req: Request, res: Response) => {
     }
 };
 
+const getSuggestions = async (req: Request, res: Response) => {
+    const q = String(req.query.q || '').toLowerCase().trim();
+    if (!q) {
+      return res.status(400).json({ valid: false, message: 'Se requiere query' });
+    }
+  
+    // 1) Sinónimos traídos por la API
+    const apiSyns = await prisma.apiSynonym.findMany({
+      where: { word: { contains: q } },
+      select: { word: true }
+    });
+  
+    // 2) Palabras ya agregadas
+    const words  = await prisma.word.findMany({
+      where: { word: { contains: q } },
+      select: { word: true }
+    });
+  
+    // 3) Unión única
+    const setAll = new Set<string>();
+    apiSyns.forEach(s => setAll.add(s.word));
+    words.forEach(w => setAll.add(w.word));
+  
+    // 4) Formatear sugerencias
+    const suggestions = Array.from(setAll).map(w => ({
+      word:  w,
+      added: words.some(x => x.word === w)
+    }));
+  
+    res.json({ valid: true, suggestions });
+  };
+
 export const vocabularioControllers = {
     listWords,
     getOrCreateWord,
     createWord,
     updateWord,
-    deleteWord
+    deleteWord,
+    getSuggestions
 };

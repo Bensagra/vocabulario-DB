@@ -8,6 +8,6 @@ router.get('/words/:word', (req, res) => {vocabularioControllers.getOrCreateWord
 router.post('/words', (req, res) => {vocabularioControllers.createWord(req, res, )});
 router.put('/words/:id', (req, res) => vocabularioControllers.updateWord(req, res, ));
 router.delete('/words/:id', (req, res) => vocabularioControllers.deleteWord(req, res, ));
-
+router.get('/words/suggestions', (req, res) => {vocabularioControllers.getSuggestions(req, res, )});
 
 export default router;
