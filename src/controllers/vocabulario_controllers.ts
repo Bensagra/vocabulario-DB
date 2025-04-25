@@ -231,8 +231,8 @@ async function fetchFromDictionaryAPI2(word: string) {
     }
   }
 
-const getSuggestions = async (req: Request, res: Response) => {
-    const q = String(req.query.q).toLowerCase().trim();
+  const getSuggestions = async (req: Request, res: Response) => {
+    const q = String(req.query.q ?? '').toLowerCase().trim();
     if (!q) {
       return res.status(400).json({ valid: false, message: 'Se requiere query' });
     }
@@ -242,21 +242,20 @@ const getSuggestions = async (req: Request, res: Response) => {
       where: { word: { contains: q } },
       select: { id: true }
     });
-    console.log('matchedWords', matchedWords);
   
-    // 2) IDs de wordRefId de apiSynonym que contienen la query
+    // 2) Registros de apiSynonym que contienen la query
     const matchedApiSyns = await prisma.apiSynonym.findMany({
       where: { word: { contains: q } },
-      select: { wordRefId: true }
+      select: { wordRefId: true, word: true }
     });
   
-    // 3) IDs de wordRefId de associatedSynonym que contienen la query
+    // 3) Registros de associatedSynonym que contienen la query
     const matchedAssocSyns = await prisma.associatedSynonym.findMany({
       where: { word: { contains: q } },
-      select: { wordRefId: true }
+      select: { wordRefId: true, word: true }
     });
   
-    // 4) Unir todos los IDs en un Set
+    // 4) Unir IDs de word
     const wordIds = new Set<number>();
     matchedWords.forEach(w => wordIds.add(w.id));
     matchedApiSyns.forEach(s => wordIds.add(s.wordRefId));
@@ -266,8 +265,8 @@ const getSuggestions = async (req: Request, res: Response) => {
       return res.json({ valid: true, suggestions: [] });
     }
   
-    // 5) Recopilar todos los sinónimos (API y asociados) de esas palabras
-    const [ apiSynsAll, assocSynsAll ] = await Promise.all([
+    // 5) Obtener todos los sinónimos (API) y asociados para esos wordIds
+    const [apiSynsAll, assocSynsAll] = await Promise.all([
       prisma.apiSynonym.findMany({
         where: { wordRefId: { in: Array.from(wordIds) } },
         select: { word: true }
@@ -278,34 +277,38 @@ const getSuggestions = async (req: Request, res: Response) => {
       })
     ]);
   
-    // 6) Unificar y ordenar
-    const synonymsSet = new Set<string>();
-    apiSynsAll.forEach(s => synonymsSet.add(s.word));
-    assocSynsAll.forEach(s => synonymsSet.add(s.word));
-    const synonyms = Array.from(synonymsSet).sort();
+    // 6) Construir sets para identificar el origen
+    const apiSet   = new Set<string>(apiSynsAll.map(s => s.word));
+    const assocSet = new Set<string>(assocSynsAll.map(s => s.word));
   
-    // 7) Para cada sinónimo, si está en Word (tiene definiciones en DB), úsalas;
-    //    sino, haz fetch a la API y obtén definiciones al vuelo.
-    const suggestions = await Promise.all(synonyms.map(async syn => {
+    // 7) Unión única de todos los sinónimos encontrados
+    const allSyns = Array.from(new Set([...apiSet, ...assocSet])).sort();
+  
+    // 8) Generar sugerencias con flags de origen y definiciones
+    const suggestions = await Promise.all(allSyns.map(async syn => {
+      // ¿Está almacenado como palabra con definiciones propias?
       const wordEntry = await prisma.word.findUnique({
         where: { word: syn },
         include: { definitions: true }
       });
   
+      let definitions: string[];
+      let source: 'db' | 'api';
       if (wordEntry && wordEntry.definitions.length) {
-        return {
-          word: syn,
-          definitions: wordEntry.definitions.map(d => d.text),
-          source: 'db'
-        };
+        definitions = wordEntry.definitions.map(d => d.text);
+        source = 'db';
       } else {
-        const definitions = await fetchFromDictionaryAPI2(syn);
-        return {
-          word: syn,
-          definitions,
-          source: 'api'
-        };
+        definitions = await fetchFromDictionaryAPI2(syn);
+        source = 'api';
       }
+  
+      return {
+        word: syn,
+        definitions,
+        source,               // 'db' o 'api'
+        isApiSynonym: apiSet.has(syn),
+        isAssocSynonym: assocSet.has(syn)
+      };
     }));
   
     res.status(200).json({ valid: true, suggestions });
