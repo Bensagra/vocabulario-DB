@@ -219,35 +219,61 @@ const deleteWord = async (req: Request, res: Response) => {
 };
 
 const getSuggestions = async (req: Request, res: Response) => {
-    const q = String(req.query.q || '').toLowerCase().trim();
+    const q = String(req.query.q ?? '').toLowerCase().trim();
     if (!q) {
       return res.status(400).json({ valid: false, message: 'Se requiere query' });
     }
   
-    // 1) Sinónimos traídos por la API
-    const apiSyns = await prisma.apiSynonym.findMany({
+    // 1) Encuentra palabras que contengan la query
+    const matchedWords = await prisma.word.findMany({
       where: { word: { contains: q } },
+      select: { id: true }
+    });
+  
+    // 2) Encuentra sinónimos de API que contengan la query
+    const matchedApiSyns = await prisma.apiSynonym.findMany({
+      where: { word: { contains: q } },
+      select: { wordRefId: true }
+    });
+  
+    // 3) Encuentra sinónimos asociados que contengan la query
+    const matchedAssocSyns = await prisma.associatedSynonym.findMany({
+      where: { word: { contains: q } },
+      select: { wordRefId: true }
+    });
+  
+    // 4) Agrupa todos los IDs de palabras relevantes
+    const wordIds = new Set<number>();
+    matchedWords.forEach(w => wordIds.add(w.id));
+    matchedApiSyns.forEach(s => wordIds.add(s.wordRefId));
+    matchedAssocSyns.forEach(s => wordIds.add(s.wordRefId));
+  
+    if (wordIds.size === 0) {
+      // No encontró nada
+      return res.json({ valid: true, synonyms: [] });
+    }
+  
+    // 5) Trae todos los sinónimos (API) de esas palabras
+    const apiSynsAll = await prisma.apiSynonym.findMany({
+      where: { wordRefId: { in: Array.from(wordIds) } },
       select: { word: true }
     });
   
-    // 2) Palabras ya agregadas
-    const words  = await prisma.word.findMany({
-      where: { word: { contains: q } },
+    // 6) Trae todos los sinónimos (asociados) de esas palabras
+    const assocSynsAll = await prisma.associatedSynonym.findMany({
+      where: { wordRefId: { in: Array.from(wordIds) } },
       select: { word: true }
     });
   
-    // 3) Unión única
-    const setAll = new Set<string>();
-    apiSyns.forEach(s => setAll.add(s.word));
-    words.forEach(w => setAll.add(w.word));
+    // 7) Reúne y unifica en un set para eliminar duplicados
+    const synonymsSet = new Set<string>();
+    apiSynsAll.forEach(s => synonymsSet.add(s.word));
+    assocSynsAll.forEach(s => synonymsSet.add(s.word));
   
-    // 4) Formatear sugerencias
-    const suggestions = Array.from(setAll).map(w => ({
-      word:  w,
-      added: words.some(x => x.word === w)
-    }));
+    // 8) Devuelve la lista ordenada
+    const synonyms = Array.from(synonymsSet).sort();
   
-    res.json({ valid: true, suggestions });
+    res.json({ valid: true, synonyms });
   };
 
 export const vocabularioControllers = {
