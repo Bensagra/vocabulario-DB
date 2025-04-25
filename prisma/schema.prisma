@@ -8,38 +8,32 @@ generator client {
 }
 
 model Word {
-  id          Int               @id @default(autoincrement())
-  word        String            @unique
-  type        WordType
-  definition  String
-  apiSynonyms ApiSynonym[]      @relation("ApiSynonyms")
-  assocSynonyms AssociatedSynonym[] @relation("AssociatedSynonyms")
-  createdAt   DateTime          @default(now())
+  id             Int           @id @default(autoincrement())
+  word           String        @unique
+  type           String
+  definitions    Definition[]  // Relación 1-N
+  apiSynonyms    ApiSynonym[]
+  assocSynonyms  AssociatedSynonym[]
+  createdAt      DateTime      @default(now())
+}
+
+model Definition {
+  id       Int    @id @default(autoincrement())
+  text     String
+  wordId   Int
+  word     Word   @relation(fields: [wordId], references: [id])
 }
 
 model ApiSynonym {
-  id          Int     @id @default(autoincrement())
-  word        String
-  wordRef     Word    @relation("ApiSynonyms", fields: [wordRefId], references: [id])
-  wordRefId   Int
+  id        Int    @id @default(autoincrement())
+  word      String
+  wordRefId Int
+  wordRef   Word   @relation(fields: [wordRefId], references: [id])
 }
 
 model AssociatedSynonym {
-  id          Int     @id @default(autoincrement())
-  word        String
-  wordRef     Word    @relation("AssociatedSynonyms", fields: [wordRefId], references: [id])
-  wordRefId   Int
-}
-
-enum WordType {
-  noun
-  verb
-  adjective
-  adverb
-  pronoun
-  preposition
-  conjunction
-  interjection
-  determiner
-  other
+  id        Int    @id @default(autoincrement())
+  word      String
+  wordRefId Int
+  wordRef   Word   @relation(fields: [wordRefId], references: [id])
 }

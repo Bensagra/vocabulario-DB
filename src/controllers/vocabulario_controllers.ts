@@ -5,33 +5,29 @@ import { Request, Response } from 'express';
 const prisma = new PrismaClient();
 
 /**
- * Consulta la API externa y devuelve definición, tipo y sinónimos.
+ * Consulta la API externa y devuelve definiciones, tipo y sinónimos.
  */
 const fetchFromDictionaryAPI = async (word: string) => {
     try {
-        // Obtener DEFINICIÓN desde dictionaryapi.dev
         const defResponse = await axios.get(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`);
         const data = defResponse.data[0];
 
-        const definition = data.meanings[0].definitions[0].definition;
         const type = data.meanings[0].partOfSpeech;
 
-        // Obtener SINÓNIMOS desde Datamuse
+        const definitions: string[] = [];
+        data.meanings.forEach((meaning: any) => {
+            meaning.definitions.forEach((def: any) => {
+                definitions.push(def.definition);
+            });
+        });
+
         const synResponse = await axios.get(`https://api.datamuse.com/words?rel_syn=${word}`);
         const synonyms = synResponse.data.map((item: any) => item.word);
 
-        return {
-            definition,
-            type,
-            synonyms
-        };
+        return { definitions, type, synonyms };
     } catch (error) {
         console.error("Error fetching from dictionary APIs:", (error as Error).message);
-        return {
-            definition: "Definition not found.",
-            type: "other",
-            synonyms: []
-        };
+        return { definitions: ["Definition not found."], type: "other", synonyms: [] };
     }
 };
 
@@ -49,7 +45,7 @@ const listWords = async (req: Request, res: Response) => {
 
         const words = await prisma.word.findMany({
             orderBy,
-            include: { apiSynonyms: true, assocSynonyms: true }
+            include: { apiSynonyms: true, assocSynonyms: true, definitions: true }
         });
 
         res.status(200).json({ valid: true, words });
@@ -67,9 +63,9 @@ const getOrCreateWord = async (req: Request, res: Response) => {
     try {
         const lowerWord = word.toLowerCase();
 
-        let existingWord = await prisma.word.findUnique({
+        const existingWord = await prisma.word.findUnique({
             where: { word: lowerWord },
-            include: { apiSynonyms: true, assocSynonyms: true }
+            include: { apiSynonyms: true, assocSynonyms: true, definitions: true }
         });
 
         if (existingWord) {
@@ -101,30 +97,29 @@ const createWordInternal = async (lowerWord: string, res: Response) => {
     try {
         const existingWord = await prisma.word.findUnique({
             where: { word: lowerWord },
-            include: { apiSynonyms: true, assocSynonyms: true }
+            include: { apiSynonyms: true, assocSynonyms: true, definitions: true }
         });
 
         if (existingWord) {
             return res.status(200).json({ valid: true, word: existingWord, message: "Word already exists" });
         }
 
-        const { definition, type, synonyms } = await fetchFromDictionaryAPI(lowerWord);
+        const { definitions, type, synonyms } = await fetchFromDictionaryAPI(lowerWord);
         const apiSynonyms = synonyms.map((s: string) => s.toLowerCase());
 
         const newWord = await prisma.word.create({
-            data: {
-                word: lowerWord,
-                type,
-                definition
-            }
+            data: { word: lowerWord, type }
         });
+
+        for (const def of definitions) {
+            await prisma.definition.create({
+                data: { text: def, wordId: newWord.id }
+            });
+        }
 
         for (const syn of apiSynonyms) {
             await prisma.apiSynonym.create({
-                data: {
-                    word: syn,
-                    wordRefId: newWord.id
-                }
+                data: { word: syn, wordRefId: newWord.id }
             });
         }
 
@@ -132,7 +127,7 @@ const createWordInternal = async (lowerWord: string, res: Response) => {
 
         const wordWithSynonyms = await prisma.word.findUnique({
             where: { id: newWord.id },
-            include: { apiSynonyms: true, assocSynonyms: true }
+            include: { apiSynonyms: true, assocSynonyms: true, definitions: true }
         });
 
         res.status(201).json({ valid: true, word: wordWithSynonyms, message: "Word created successfully" });
@@ -145,20 +140,16 @@ const createWordInternal = async (lowerWord: string, res: Response) => {
  * Asociar sinónimos automáticos en base a sinónimos traídos por la API.
  */
 const checkAndAssociateSynonymsFromAPI = async (newWord: any, prisma: PrismaClient) => {
-    const apiSynonymsNew = await prisma.apiSynonym.findMany({
-        where: { wordRefId: newWord.id }
-    });
-    const apiSynonymsNewList = apiSynonymsNew.map(s => s.word.toLowerCase());
+    const apiSynonymsNewList = (await prisma.apiSynonym.findMany({ where: { wordRefId: newWord.id } }))
+        .map(s => s.word.toLowerCase());
 
     const allWords = await prisma.word.findMany();
 
     for (const existingWord of allWords) {
         if (existingWord.id === newWord.id) continue;
 
-        const existingApiSynonyms = await prisma.apiSynonym.findMany({
-            where: { wordRefId: existingWord.id }
-        });
-        const existingApiSynonymsList = existingApiSynonyms.map(s => s.word.toLowerCase());
+        const existingApiSynonymsList = (await prisma.apiSynonym.findMany({ where: { wordRefId: existingWord.id } }))
+            .map(s => s.word.toLowerCase());
 
         const hasMatch = 
             apiSynonymsNewList.includes(existingWord.word.toLowerCase()) ||
@@ -190,17 +181,17 @@ const checkAndAssociateSynonymsFromAPI = async (newWord: any, prisma: PrismaClie
 };
 
 /**
- * Actualiza una palabra existente.
+ * Actualiza una palabra existente (solo tipo). Las definiciones se gestionan aparte.
  */
 const updateWord = async (req: Request, res: Response) => {
     const { id } = req.params;
-    const { definition, type } = req.body;
+    const { type } = req.body;
 
     try {
         const updatedWord = await prisma.word.update({
             where: { id: parseInt(id) },
-            data: { definition, type },
-            include: { apiSynonyms: true, assocSynonyms: true }
+            data: { type },
+            include: { apiSynonyms: true, assocSynonyms: true, definitions: true }
         });
 
         res.status(200).json({ valid: true, word: updatedWord, message: "Word updated successfully" });
@@ -210,12 +201,13 @@ const updateWord = async (req: Request, res: Response) => {
 };
 
 /**
- * Elimina una palabra junto con sus sinónimos.
+ * Elimina una palabra junto con definiciones y sinónimos.
  */
 const deleteWord = async (req: Request, res: Response) => {
     const { id } = req.params;
 
     try {
+        await prisma.definition.deleteMany({ where: { wordId: parseInt(id) } });
         await prisma.apiSynonym.deleteMany({ where: { wordRefId: parseInt(id) } });
         await prisma.associatedSynonym.deleteMany({ where: { wordRefId: parseInt(id) } });
         await prisma.word.delete({ where: { id: parseInt(id) } });
