@@ -8,13 +8,31 @@ const prisma = new PrismaClient();
  * Consulta la API externa y devuelve definición, tipo y sinónimos.
  */
 const fetchFromDictionaryAPI = async (word: string) => {
-    const response = await axios.get(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`);
-    const data = response.data[0];
-    return {
-        definition: data.meanings[0].definitions[0].definition,
-        type: data.meanings[0].partOfSpeech,
-        synonyms: data.meanings[0].definitions[0].synonyms || []
-    };
+    try {
+        // Obtener DEFINICIÓN desde dictionaryapi.dev
+        const defResponse = await axios.get(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`);
+        const data = defResponse.data[0];
+
+        const definition = data.meanings[0].definitions[0].definition;
+        const type = data.meanings[0].partOfSpeech;
+
+        // Obtener SINÓNIMOS desde Datamuse
+        const synResponse = await axios.get(`https://api.datamuse.com/words?rel_syn=${word}`);
+        const synonyms = synResponse.data.map((item: any) => item.word);
+
+        return {
+            definition,
+            type,
+            synonyms
+        };
+    } catch (error) {
+        console.error("Error fetching from dictionary APIs:", (error as Error).message);
+        return {
+            definition: "Definition not found.",
+            type: "other",
+            synonyms: []
+        };
+    }
 };
 
 /**
