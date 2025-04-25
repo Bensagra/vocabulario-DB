@@ -4,6 +4,9 @@ import { Request, Response } from 'express';
 import ModelClient, { isUnexpected } from "@azure-rest/ai-inference";
 import { AzureKeyCredential } from "@azure/core-auth";
 
+const token = process.env["GITHUB_TOKEN"];
+const endpoint = "https://models.github.ai/inference";
+const model = "openai/gpt-4.1";
 import OpenAI from "openai";
 const client = new OpenAI();
 const prisma = new PrismaClient();
@@ -199,89 +202,35 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
         res.status(404).json({ valid: false, message: "Word not found" });
     }
 };
-const checkAndAssociateSynonymsAI = async (newWord:any, prisma: PrismaClient) => {
+const checkAndAssociateSynonymsAI = async (newWord: any, prisma: PrismaClient) => {
     const allWords = await prisma.word.findMany();
 
-    for (const existingWord of allWords) {
-        if (existingWord.id === newWord.id) continue;
+    if (allWords.length === 0) return;
 
-        const areSynonyms = await compareDefinitionsWithAI(
-            newWord.word,
-            newWord.definition,
-            existingWord.word,
-            existingWord.definition
-        );
-
-        if (areSynonyms) {
-            const existingRelation = await prisma.synonym.findFirst({
-                where: { word: existingWord.word, wordRefId: newWord.id }
-            });
-
-            if (!existingRelation) {
-                await prisma.synonym.create({
-                    data: {
-                        word: existingWord.word,
-                        wordRefId: newWord.id
-                    }
-                });
-            }
-
-            const reverseRelation = await prisma.synonym.findFirst({
-                where: { word: newWord.word, wordRefId: existingWord.id }
-            });
-
-            if (!reverseRelation) {
-                await prisma.synonym.create({
-                    data: {
-                        word: newWord.word,
-                        wordRefId: existingWord.id
-                    }
-                });
-            }
-        }
-    }
-};
-
-
-
-/**
- * Compara dos definiciones usando GPT y determina si las palabras son sinónimos.
- */
-
-
-
-
-const token = process.env["GITHUB_TOKEN"];
-const endpoint = "https://models.github.ai/inference";
-const model = "openai/gpt-4.1";
-
-/**
- * Compara dos definiciones usando Azure AI Inference (GitHub Models).
- * Devuelve true si las palabras son sinónimos.
- */
-export const compareDefinitionsWithAI = async (wordA: string, defA: string, wordB: string, defB: string): Promise<boolean> => {
-    const client = ModelClient(endpoint, new AzureKeyCredential(token as string));
+    // Armamos el listado de palabras existentes
+    let wordList = "";
+    allWords.forEach(word => {
+        wordList += `- ${word.word}: "${word.definition}"\n`;
+    });
 
     const prompt = `
 You are a language expert.
 
-Compare the following two words based on their definitions.
+Here is a NEW word and its definition:
+Word: "${newWord.word}"
+Definition: "${newWord.definition}"
 
-Word 1: “${wordA}”
-Definition 1: “${defA}”
+Here is a list of EXISTING words with their definitions:
+${wordList}
 
-Word 2: “${wordB}”
-Definition 2: “${defB}”
+Task:
+Identify which words from the list are synonyms, belong to the same word family, or have a related meaning to the NEW word.
 
-Determine the relationship between these two words:
-	•	Respond with “YES” if:
-	•	They are synonyms (same or very similar meaning).
-	•	They belong to the same word family (e.g., live and survive).
-	•	They have related meanings where, using a connector (like cause-effect, purpose, result, etc.), they can be associated in context.
-	•	Respond with “NO” if none of the above applies.
-
-Respond ONLY with “YES” or “NO”.
+Respond ONLY with a list of the related words, separated by commas. 
+If none are related, respond with "NONE".
 `;
+
+    const client = ModelClient(endpoint, new AzureKeyCredential(token as string));
 
     const response = await client.path("/chat/completions").post({
         body: {
@@ -289,7 +238,7 @@ Respond ONLY with “YES” or “NO”.
                 { role: "system", content: "You are a helpful assistant." },
                 { role: "user", content: prompt }
             ],
-            temperature: 0,    // Temperatura baja para respuestas más determinísticas
+            temperature: 0,
             top_p: 1.0,
             model: model
         }
@@ -301,12 +250,55 @@ Respond ONLY with “YES” or “NO”.
     }
 
     const content = response.body.choices[0]?.message?.content;
-    if (!content) {
-        throw new Error("Response content is null or undefined");
-    }
+    if (!content) throw new Error("Response content is null or undefined");
+
     const reply = content.trim().toUpperCase();
-    return reply === "YES";
+
+    if (reply === "NONE") return;
+
+    // Procesar respuesta: Lista de palabras separadas por coma
+    const relatedWords = reply.split(',').map(w => w.trim().toLowerCase());
+
+    for (const related of relatedWords) {
+        const existing = allWords.find(w => w.word.toLowerCase() === related);
+
+        if (existing) {
+            const alreadyExists = await prisma.synonym.findFirst({
+                where: { word: existing.word, wordRefId: newWord.id }
+            });
+
+            if (!alreadyExists) {
+                await prisma.synonym.create({
+                    data: { word: existing.word, wordRefId: newWord.id }
+                });
+            }
+
+            const reverseExists = await prisma.synonym.findFirst({
+                where: { word: newWord.word, wordRefId: existing.id }
+            });
+
+            if (!reverseExists) {
+                await prisma.synonym.create({
+                    data: { word: newWord.word, wordRefId: existing.id }
+                });
+            }
+        }
+    }
 };
+
+
+/**
+ * Compara dos definiciones usando GPT y determina si las palabras son sinónimos.
+ */
+
+
+
+
+
+/**
+ * Compara dos definiciones usando Azure AI Inference (GitHub Models).
+ * Devuelve true si las palabras son sinónimos.
+ */
 
 
 
