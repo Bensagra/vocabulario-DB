@@ -217,6 +217,19 @@ const deleteWord = async (req: Request, res: Response) => {
         res.status(404).json({ valid: false, message: "Word not found" });
     }
 };
+async function fetchFromDictionaryAPI2(word: string) {
+    try {
+      const defResponse = await axios.get(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`);
+      const data = defResponse.data[0];
+      const definitions: string[] = [];
+      data.meanings.forEach((m: any) =>
+        m.definitions.forEach((d: any) => definitions.push(d.definition))
+      );
+      return definitions;
+    } catch {
+      return ['Definition not found.'];
+    }
+  }
 
 const getSuggestions = async (req: Request, res: Response) => {
     const q = String(req.query.q ?? '').toLowerCase().trim();
@@ -224,56 +237,77 @@ const getSuggestions = async (req: Request, res: Response) => {
       return res.status(400).json({ valid: false, message: 'Se requiere query' });
     }
   
-    // 1) Encuentra palabras que contengan la query
+    // 1) IDs de palabras que contienen la query
     const matchedWords = await prisma.word.findMany({
       where: { word: { contains: q } },
       select: { id: true }
     });
   
-    // 2) Encuentra sinónimos de API que contengan la query
+    // 2) IDs de wordRefId de apiSynonym que contienen la query
     const matchedApiSyns = await prisma.apiSynonym.findMany({
       where: { word: { contains: q } },
       select: { wordRefId: true }
     });
   
-    // 3) Encuentra sinónimos asociados que contengan la query
+    // 3) IDs de wordRefId de associatedSynonym que contienen la query
     const matchedAssocSyns = await prisma.associatedSynonym.findMany({
       where: { word: { contains: q } },
       select: { wordRefId: true }
     });
   
-    // 4) Agrupa todos los IDs de palabras relevantes
+    // 4) Unir todos los IDs en un Set
     const wordIds = new Set<number>();
     matchedWords.forEach(w => wordIds.add(w.id));
     matchedApiSyns.forEach(s => wordIds.add(s.wordRefId));
     matchedAssocSyns.forEach(s => wordIds.add(s.wordRefId));
   
     if (wordIds.size === 0) {
-      // No encontró nada
-      return res.json({ valid: true, synonyms: [] });
+      return res.json({ valid: true, suggestions: [] });
     }
   
-    // 5) Trae todos los sinónimos (API) de esas palabras
-    const apiSynsAll = await prisma.apiSynonym.findMany({
-      where: { wordRefId: { in: Array.from(wordIds) } },
-      select: { word: true }
-    });
+    // 5) Recopilar todos los sinónimos (API y asociados) de esas palabras
+    const [ apiSynsAll, assocSynsAll ] = await Promise.all([
+      prisma.apiSynonym.findMany({
+        where: { wordRefId: { in: Array.from(wordIds) } },
+        select: { word: true }
+      }),
+      prisma.associatedSynonym.findMany({
+        where: { wordRefId: { in: Array.from(wordIds) } },
+        select: { word: true }
+      })
+    ]);
   
-    // 6) Trae todos los sinónimos (asociados) de esas palabras
-    const assocSynsAll = await prisma.associatedSynonym.findMany({
-      where: { wordRefId: { in: Array.from(wordIds) } },
-      select: { word: true }
-    });
-  
-    // 7) Reúne y unifica en un set para eliminar duplicados
+    // 6) Unificar y ordenar
     const synonymsSet = new Set<string>();
     apiSynsAll.forEach(s => synonymsSet.add(s.word));
     assocSynsAll.forEach(s => synonymsSet.add(s.word));
-  
-    // 8) Devuelve la lista ordenada
     const synonyms = Array.from(synonymsSet).sort();
   
-    res.json({ valid: true, synonyms });
+    // 7) Para cada sinónimo, si está en Word (tiene definiciones en DB), úsalas;
+    //    sino, haz fetch a la API y obtén definiciones al vuelo.
+    const suggestions = await Promise.all(synonyms.map(async syn => {
+      const wordEntry = await prisma.word.findUnique({
+        where: { word: syn },
+        include: { definitions: true }
+      });
+  
+      if (wordEntry && wordEntry.definitions.length) {
+        return {
+          word: syn,
+          definitions: wordEntry.definitions.map(d => d.text),
+          source: 'db'
+        };
+      } else {
+        const definitions = await fetchFromDictionaryAPI2(syn);
+        return {
+          word: syn,
+          definitions,
+          source: 'api'
+        };
+      }
+    }));
+  
+    res.json({ valid: true, suggestions });
   };
 
 export const vocabularioControllers = {
