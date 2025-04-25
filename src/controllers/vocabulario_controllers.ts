@@ -154,7 +154,7 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
         }
 
         // Asociar sinónimos automáticos por definición similar
-        await checkAndAssociateSynonymsAI(newWord, prisma);
+        await checkAndAssociateSynonymsSimple(newWord, prisma);
 
         const wordWithSynonyms = await prisma.word.findUnique({
             where: { id: newWord.id },
@@ -202,84 +202,52 @@ const createWord = async (req: Request, res: Response, prisma: PrismaClient) => 
         res.status(404).json({ valid: false, message: "Word not found" });
     }
 };
-const checkAndAssociateSynonymsAI = async (newWord: any, prisma: PrismaClient) => {
-    const allWords = await prisma.word.findMany();
+const checkAndAssociateSynonymsSimple = async (newWord: any, prisma: PrismaClient) => {
+    const allWords = await prisma.word.findMany({ include: { synonyms: true } });
 
-    if (allWords.length === 0) return;
-
-    // Armamos el listado de palabras existentes
-    let wordList = "";
-    allWords.forEach(word => {
-        wordList += `- ${word.word}: "${word.definition}"\n`;
+    // Obtener sinónimos de la nueva palabra desde la DB
+    const newSynonymsDB = await prisma.synonym.findMany({
+        where: { wordRefId: newWord.id }
     });
+    const newSynonyms = newSynonymsDB.map(s => s.word.toLowerCase());
 
-    const prompt = `
-You are a language expert.
+    for (const existingWord of allWords) {
+        if (existingWord.id === newWord.id) continue;
 
-Here is a NEW word and its definition:
-Word: "${newWord.word}"
-Definition: "${newWord.definition}"
+        const existingSynonyms = existingWord.synonyms.map(s => s.word.toLowerCase());
 
-Here is a list of EXISTING words with their definitions:
-${wordList}
+        // Comparación cruzada
+        const hasMatch = 
+            // Nueva palabra vs palabra existente
+            newWord.word.toLowerCase() === existingWord.word.toLowerCase() ||
 
-Task:
-Identify which words from the list are synonyms, belong to the same word family, or have a related meaning to the NEW word.
+            // Nueva palabra vs sinónimos existentes
+            existingSynonyms.includes(newWord.word.toLowerCase()) ||
 
-Respond ONLY with a list of the related words, separated by commas. 
-If none are related, respond with "NONE".
-`;
+            // Sinónimos nuevos vs palabra existente
+            newSynonyms.includes(existingWord.word.toLowerCase()) ||
 
-    const client = ModelClient(endpoint, new AzureKeyCredential(token as string));
+            // Sinónimos nuevos vs sinónimos existentes
+            newSynonyms.some(syn => existingSynonyms.includes(syn));
 
-    const response = await client.path("/chat/completions").post({
-        body: {
-            messages: [
-                { role: "system", content: "You are a helpful assistant." },
-                { role: "user", content: prompt }
-            ],
-            temperature: 0,
-            top_p: 1.0,
-            model: model
-        }
-    });
-
-    if (isUnexpected(response)) {
-        console.error("AI Error:", response.body.error);
-        throw response.body.error;
-    }
-
-    const content = response.body.choices[0]?.message?.content;
-    if (!content) throw new Error("Response content is null or undefined");
-
-    const reply = content.trim().toUpperCase();
-
-    if (reply === "NONE") return;
-
-    // Procesar respuesta: Lista de palabras separadas por coma
-    const relatedWords = reply.split(',').map(w => w.trim().toLowerCase());
-
-    for (const related of relatedWords) {
-        const existing = allWords.find(w => w.word.toLowerCase() === related);
-
-        if (existing) {
-            const alreadyExists = await prisma.synonym.findFirst({
-                where: { word: existing.word, wordRefId: newWord.id }
+        if (hasMatch) {
+            const existingRelation = await prisma.synonym.findFirst({
+                where: { word: existingWord.word, wordRefId: newWord.id }
             });
 
-            if (!alreadyExists) {
+            if (!existingRelation) {
                 await prisma.synonym.create({
-                    data: { word: existing.word, wordRefId: newWord.id }
+                    data: { word: existingWord.word, wordRefId: newWord.id }
                 });
             }
 
-            const reverseExists = await prisma.synonym.findFirst({
-                where: { word: newWord.word, wordRefId: existing.id }
+            const reverseRelation = await prisma.synonym.findFirst({
+                where: { word: newWord.word, wordRefId: existingWord.id }
             });
 
-            if (!reverseExists) {
+            if (!reverseRelation) {
                 await prisma.synonym.create({
-                    data: { word: newWord.word, wordRefId: existing.id }
+                    data: { word: newWord.word, wordRefId: existingWord.id }
                 });
             }
         }
