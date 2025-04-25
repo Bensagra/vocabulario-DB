@@ -232,7 +232,7 @@ async function fetchFromDictionaryAPI2(word: string) {
   }
 
 const getSuggestions = async (req: Request, res: Response) => {
-    const q = String(req.query.q ?? '').toLowerCase().trim();
+    const q = String(req.query.q).toLowerCase().trim();
     if (!q) {
       return res.status(400).json({ valid: false, message: 'Se requiere query' });
     }
@@ -242,6 +242,7 @@ const getSuggestions = async (req: Request, res: Response) => {
       where: { word: { contains: q } },
       select: { id: true }
     });
+    console.log('matchedWords', matchedWords);
   
     // 2) IDs de wordRefId de apiSynonym que contienen la query
     const matchedApiSyns = await prisma.apiSynonym.findMany({
@@ -307,7 +308,7 @@ const getSuggestions = async (req: Request, res: Response) => {
       }
     }));
   
-    res.json({ valid: true, suggestions });
+    res.status(200).json({ valid: true, suggestions });
   };
 
 export const vocabularioControllers = {
