@@ -267,15 +267,20 @@ You are a language expert.
 
 Compare the following two words based on their definitions.
 
-Word 1: "${wordA}"
-Definition 1: "${defA}"
+Word 1: “${wordA}”
+Definition 1: “${defA}”
 
-Word 2: "${wordB}"
-Definition 2: "${defB}"
+Word 2: “${wordB}”
+Definition 2: “${defB}”
 
-Are these two words synonyms or words with similar meanings?
+Determine the relationship between these two words:
+	•	Respond with “YES” if:
+	•	They are synonyms (same or very similar meaning).
+	•	They belong to the same word family (e.g., live and survive).
+	•	They have related meanings where, using a connector (like cause-effect, purpose, result, etc.), they can be associated in context.
+	•	Respond with “NO” if none of the above applies.
 
-Respond ONLY with "YES" if they are synonyms, or "NO" if they are not.
+Respond ONLY with “YES” or “NO”.
 `;
 
     const response = await client.path("/chat/completions").post({
